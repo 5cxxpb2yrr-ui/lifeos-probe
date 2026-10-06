@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Life OS Probe</title>
+<script src="https://cdn.jsdelivr.net/gh/open-nomie/plugins/bin/v1/nomie-plugin.js"></script>
+<style>
+  :root { --bg:#f3f4f6; --fg:#15171c; --mut:#667085; --card:#fff; --line:#d8dbe1; --acc:#1d5fd1; }
+  :root.dark { --bg:#14161a; --fg:#e7e9ee; --mut:#98a0ad; --card:#1d2026; --line:#2c3038; --acc:#6aa8ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:12px; background:var(--bg); color:var(--fg);
+         font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  h1 { font-size:18px; margin:0 0 2px; }
+  .status { color:var(--mut); font-size:13px; margin-bottom:10px; }
+  .bar { display:flex; gap:8px; margin-bottom:10px; }
+  button { flex:1; min-height:44px; border:1px solid var(--line); border-radius:10px;
+           background:var(--card); color:var(--fg); font:inherit; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+  .entry { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:8px 10px; margin-bottom:8px; overflow-wrap:anywhere; }
+  .meta { color:var(--mut); font-size:12px; }
+  .text { margin:2px 0; }
+  .empty { color:var(--mut); padding:12px 0; }
+  .widget { text-align:center; padding:6px; }
+  .widget .n { font-size:28px; font-weight:700; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+(function () {
+  var KEY = 'lifeos-probe';
+  var state = { log: [] };
+  var mode = 'modal';
+  var ready = false;
+
+  var plugin = new NomiePlugin({
+    name: 'Life OS Probe',
+    emoji: '🧭',
+    description: 'Diagnostic: shows what Nomie sends to a plugin',
+    uses: ['onLaunch', 'onNote', 'searchNotes'],
+    version: '0.0.1',
+    addToMoreMenu: true,
+    addToWidgets: true
+  });
+
+  function h(tag, cls, text) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text != null) el.textContent = text;   // textContent: note text is never parsed as HTML
+    return el;
+  }
+
+  function save() {
+    try { var p = plugin.storage.setItem(KEY, state); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+  }
+
+  function add(entry) {
+    entry.t = new Date().toISOString();
+    state.log.unshift(entry);
+    if (state.log.length > 50) state.log.length = 50;
+    save();
+    render();
+  }
+
+  function describe(note) {
+    var text = (note && note.note) || '';
+    return {
+      text: text,
+      keys: note ? Object.keys(note).join(', ') : '',
+      tags: (text.match(/[#@+][\w-]+/g) || []).join(' '),
+      elements: Array.isArray(note && note.elements)
+        ? note.elements.map(function (e) {
+            return (e.prefix || '') + (e.id || '') + (e.value != null ? '(' + e.value + ')' : '');
+          }).join(' ')
+        : null
+    };
+  }
+
+  async function scan() {
+    try {
+      var notes = await plugin.searchNotes('', new Date(), 7);
+      if (!notes || !notes.length) { add({ type: 'scan', text: 'searchNotes returned no notes for the last 7 days' }); return; }
+      var d = describe(notes[0]);
+      d.type = 'scan';
+      d.text = notes.length + ' notes in the last 7 days. First: ' + d.text;
+      add(d);
+    } catch (e) {
+      add({ type: 'error', text: 'searchNotes failed: ' + (e && e.message ? e.message : e) });
+    }
+  }
+
+  function render() {
+    var app = document.getElementById('app');
+    var dark = plugin.prefs && plugin.prefs.theme === 'dark';
+    document.documentElement.classList.toggle('dark', !!dark);
+    app.textContent = '';
+
+    if (mode === 'widget') {
+      var w = h('div', 'widget');
+      w.appendChild(h('div', 'n', String(state.log.filter(function (e) { return e.type === 'note'; }).length)));
+      w.appendChild(h('div', 'meta', 'notes seen by the probe'));
+      app.appendChild(w);
+      return;
+    }
+
+    app.appendChild(h('h1', null, '🧭 Life OS Probe'));
+    app.appendChild(h('div', 'status', ready
+      ? 'Connected to Nomie'
+      : 'Waiting for Nomie. Open this from Nomie\'s plugin list, not directly in a browser.'));
+
+    var bar = h('div', 'bar');
+    var b1 = h('button', 'primary', 'Scan last 7 days');
+    b1.onclick = scan;
+    var b2 = h('button', null, 'Clear log');
+    b2.onclick = function () { state.log = []; save(); render(); };
+    bar.appendChild(b1); bar.appendChild(b2);
+    app.appendChild(bar);
+
+    if (!state.log.length) {
+      app.appendChild(h('div', 'empty', 'Nothing yet. Log a note in Nomie, then reopen this plugin.'));
+      return;
+    }
+    state.log.forEach(function (e) {
+      var card = h('div', 'entry');
+      card.appendChild(h('div', 'meta', e.type + ' at ' + new Date(e.t).toLocaleTimeString()));
+      if (e.text) card.appendChild(h('div', 'text', e.text));
+      if (e.tags) card.appendChild(h('div', 'meta', 'tags from text: ' + e.tags));
+      if (e.elements != null) card.appendChild(h('div', 'meta', 'elements: ' + (e.elements || '(none)')));
+      if (e.keys) card.appendChild(h('div', 'meta', 'note fields: ' + e.keys));
+      app.appendChild(card);
+    });
+  }
+
+  plugin.onRegistered(async function () {
+    try {
+      await plugin.storage.init();
+      var saved = await plugin.storage.getItem(KEY);
+      if (saved && saved.log) state.log = state.log.concat(saved.log).slice(0, 50);
+    } catch (e) {
+      state.log.unshift({ type: 'error', t: new Date().toISOString(), text: 'storage failed: ' + (e && e.message ? e.message : e) });
+    }
+    ready = true;
+    render();
+  });
+  plugin.onLaunch(function () { add({ type: 'launch', text: 'Nomie launched' }); });
+  plugin.onNote(function (note) { var d = describe(note); d.type = 'note'; add(d); });
+  plugin.onUIOpened(function () { mode = 'modal'; render(); });
+  plugin.onWidget(function () { mode = 'widget'; render(); });
+
+  render();
+})();
+</script>
+</body>
+</html>
