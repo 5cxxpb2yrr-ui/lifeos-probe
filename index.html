@@ -35,12 +35,18 @@
   var mode = 'modal';
   var ready = false;
 
+  if (typeof NomiePlugin === 'undefined') {
+    document.getElementById('app').textContent =
+      'The Nomie plugin helper script did not load, so the plugin cannot start.';
+    return;
+  }
+
   var plugin = new NomiePlugin({
     name: 'Life OS Probe',
     emoji: '🧭',
     description: 'Diagnostic: shows what Nomie sends to a plugin',
     uses: ['onLaunch', 'onNote', 'searchNotes'],
-    version: '0.0.1',
+    version: '0.0.2',
     addToMoreMenu: true,
     addToWidgets: true
   });
@@ -78,17 +84,53 @@
     };
   }
 
-  async function scan() {
-    try {
-      var notes = await plugin.searchNotes('', new Date(), 7);
-      if (!notes || !notes.length) { add({ type: 'scan', text: 'searchNotes returned no notes for the last 7 days' }); return; }
-      var d = describe(notes[0]);
-      d.type = 'scan';
-      d.text = notes.length + ' notes in the last 7 days. First: ' + d.text;
-      add(d);
-    } catch (e) {
-      add({ type: 'error', text: 'searchNotes failed: ' + (e && e.message ? e.message : e) });
+  function withTimeout(p, ms) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () { reject(new Error('no response after ' + ms / 1000 + 's')); }, ms);
+      Promise.resolve(p).then(
+        function (v) { clearTimeout(t); resolve(v); },
+        function (e) { clearTimeout(t); reject(e); }
+      );
+    });
+  }
+
+  function apiMethods() {
+    var names = {}, o = plugin;
+    while (o && o !== Object.prototype) {
+      Object.getOwnPropertyNames(o).forEach(function (n) {
+        try { if (n !== 'constructor' && typeof plugin[n] === 'function') names[n] = 1; } catch (e) {}
+      });
+      o = Object.getPrototypeOf(o);
     }
+    return Object.keys(names).sort().join(', ');
+  }
+
+  async function scan() {
+    add({ type: 'diagnostics', text: 'Running (can take up to ~20 seconds)...' });
+    add({ type: 'api', text: 'Plugin methods: ' + apiMethods() });
+    var attempts = [
+      { label: "searchNotes('', today, 7)", args: ['', new Date(), 7] },
+      { label: "searchNotes('', today, 1)", args: ['', new Date(), 1] },
+      { label: "searchNotes('#', today, 7)", args: ['#', new Date(), 7] }
+    ];
+    for (var i = 0; i < attempts.length; i++) {
+      var a = attempts[i];
+      try {
+        var notes = await withTimeout(plugin.searchNotes.apply(plugin, a.args), 6000);
+        if (!notes || !notes.length) {
+          add({ type: 'scan', text: a.label + ' answered, but returned no notes' });
+          continue;
+        }
+        var d = describe(notes[0]);
+        d.type = 'scan';
+        d.text = a.label + ' returned ' + notes.length + ' notes. First: ' + d.text;
+        add(d);
+        return;
+      } catch (e) {
+        add({ type: 'error', text: a.label + ' failed: ' + (e && e.message ? e.message : e) });
+      }
+    }
+    add({ type: 'diagnostics', text: 'Finished. No search call returned notes.' });
   }
 
   function render() {
@@ -111,7 +153,7 @@
       : 'Waiting for Nomie. Open this from Nomie\'s plugin list, not directly in a browser.'));
 
     var bar = h('div', 'bar');
-    var b1 = h('button', 'primary', 'Scan last 7 days');
+    var b1 = h('button', 'primary', 'Run diagnostics');
     b1.onclick = scan;
     var b2 = h('button', null, 'Clear log');
     b2.onclick = function () { state.log = []; save(); render(); };
